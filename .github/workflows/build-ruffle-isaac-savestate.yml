@@ -1,4 +1,4 @@
-name: Build Ruffle with preset SOL
+name: Build Ruffle with Isaac preset save + save states
 
 on:
   workflow_dispatch:
@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Clone Ruffle
+      - name: Checkout pinned Ruffle source
         uses: actions/checkout@v4
         with:
           repository: ruffle-rs/ruffle
-          ref: master
+          ref: 74ade97342205ac55d264f2ceb1e642573a21d48
           fetch-depth: 1
 
       - name: Checkout modifier files
@@ -33,22 +33,29 @@ jobs:
       - name: Install wasm-bindgen
         run: cargo install --locked wasm-bindgen-cli --version 0.2.127
 
-      - name: Apply patched storage backend
+      - name: Apply existing preset-save backend
         run: cp modifier/web/src/storage.rs web/src/storage.rs
 
-      - name: Build Ruffle web packages
+      - name: Apply save-state modification
+        run: python3 modifier/patch/apply_savestate.py
+
+      - name: Build modified Ruffle
         working-directory: web
         run: |
           npm install
           npm run build
 
-      - name: Package selfhosted build
+      - name: Package hostable site
         run: |
-          cd web/packages/selfhosted/dist
-          zip -r ../../../ruffle-preset-selfhosted.zip .
+          rm -rf site-dist
+          mkdir -p site-dist
+          cp -R web/packages/selfhosted/dist/. site-dist/
+          cp modifier/site/index.html site-dist/index.html
+          cd site-dist
+          zip -r ../ruffle-isaac-savestate-site.zip .
 
-      - name: Upload build artifact
+      - name: Upload hostable site
         uses: actions/upload-artifact@v4
         with:
-          name: ruffle-preset-selfhosted
-          path: web/ruffle-preset-selfhosted.zip
+          name: ruffle-isaac-savestate-site
+          path: ruffle-isaac-savestate-site.zip
