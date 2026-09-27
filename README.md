@@ -1,56 +1,49 @@
-# Ruffle Preset Save Modifier
+# Ruffle + Binding of Isaac preset save + state snapshot prototype
 
-This modifies Ruffle's web SharedObject backend so the first SharedObject
-whose storage key ends with `/so` receives the embedded `so.sol` save.
+This kit extends the same modified Ruffle build used for the preset `so.sol` save.
+It adds a first-generation save-state system based on deterministic replay instead of
+serializing the entire Ruffle GC heap.
 
-The modifier is intentionally applied to the web storage backend rather than
-HTML/JavaScript localStorage. Ruffle's web backend normally decodes base64
-from localStorage and returns the raw SOL bytes to the core.
+## What the state file stores
 
-## Target
+- saved emulation frame
+- initial AVM RNG seed
+- every Ruffle input event recorded up to that point
 
-SWF:
-https://cdn.imageurlgenerator.com/uploads/8bc8b86f-095b-4862-b7d8-527989a6ecaa.swf
+On import, the webpage reloads a fresh Ruffle VM, restores the RNG seed, replays the
+recorded input events frame-by-frame, then resumes play.
 
-Embedded SharedObject:
-so
+This is intended to reproduce game state such as Isaac's health and enemy positions when
+the SWF behaves deterministically. It is **not** a byte-for-byte heap snapshot, so external
+network activity, wall-clock-dependent behavior, or other nondeterminism could make a state
+differ between runs.
 
-Embedded SOL:
-4,285 bytes
+## Web UI
 
-## Files
+The supplied `site/index.html` only loads the Binding of Isaac SWF. A small down-arrow in
+the top-right opens:
 
-- `web/src/storage.rs` — patched Ruffle source file
-- `preset-save.patch` — unified diff against current Ruffle `master`
-- `so.sol` — original save file
-- `.github/workflows/build-ruffle-preset.yml` — GitHub Actions build workflow
+- Export State
+- Import State
 
-## Build locally
+The exported file uses the `.rstate` extension and contains JSON data.
 
-From a Ruffle source checkout, replace `web/src/storage.rs` with the supplied
-version, or apply `preset-save.patch`.
+## Build
 
-Then follow Ruffle's current web build requirements and run:
+The GitHub Actions workflow is pinned to the same Ruffle commit used by the existing
+preset-save self-hosted build (`74ade97342205ac55d264f2ceb1e642573a21d48`).
 
-    cd web
-    npm install
-    npm run build
+The workflow combines:
 
-The selfhosted package is produced under:
+1. the existing `web/src/storage.rs` preset-save modification,
+2. the supplied `so.sol`, and
+3. the new save-state patch.
 
-    web/packages/selfhosted/dist/
+Run **Actions → Build Ruffle with Isaac preset save + save states** with `workflow_dispatch`.
+The resulting artifact is `ruffle-isaac-savestate-site.zip`.
 
-Ruffle's web README currently documents Rust + wasm32, Java, Node.js, and
-wasm-bindgen 0.2.127 as required build components.
+## Important testing note
 
-## Important behavior
-
-The preset is consumed only once. After that, Ruffle reads and writes the
-browser's normal localStorage backend.
-
-This means the preset should load on first launch, while subsequent game
-saves can persist normally.
-
-If the game still starts with a new save after using this build, the next
-thing to inspect is the SharedObject name used by the SWF; the patch currently
-targets names ending in `/so` based on the uploaded save.
+The Ruffle source cannot be compiled in this environment, so the patch is prepared for the
+pinned GitHub Actions build and should be treated as a prototype until the Actions log and
+an actual Binding of Isaac run confirm behavior.
