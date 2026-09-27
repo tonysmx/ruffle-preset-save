@@ -99,6 +99,31 @@ def patch_rng() -> None:
     replace_once(path, old, new, "RNG seed accessors")
 
 
+def add_serialize_only(path: Path, type_name: str) -> None:
+    """Add Serialize without duplicating TextControlCode's cfg_attr Deserialize."""
+    text = path.read_text(encoding="utf-8")
+    type_pat = re.compile(rf"\b(?:pub\s+)?(?:struct|enum)\s+{re.escape(type_name)}\b")
+    m = type_pat.search(text)
+    if not m:
+        die(f"Could not find event type {type_name} in {path}")
+
+    before_start = max(0, m.start() - 1200)
+    before = text[before_start:m.start()]
+    derives = list(re.finditer(r"#\[derive\((.*?)\)\]", before, re.S))
+    if not derives:
+        die(f"Could not find derive attribute for {type_name} in {path}")
+    d = derives[-1]
+    inside = d.group(1)
+    if "serde::Serialize" in inside:
+        return
+
+    new_inside = inside.rstrip() + ", serde::Serialize"
+    start = before_start + d.start(1)
+    end = before_start + d.end(1)
+    path.write_text(text[:start] + new_inside + text[end:], encoding="utf-8")
+    print(f"patched serde Serialize for {type_name} in {path.relative_to(ROOT)}")
+
+
 def patch_events() -> None:
     wanted = [
         "PlayerEvent",
@@ -111,12 +136,19 @@ def patch_events() -> None:
         "PhysicalKey",
         "LogicalKey",
         "NamedKey",
+        "KeyLocation",
     ]
     for name in wanted:
         path = find_type(name)
         if path is None:
             die(f"Could not find event type {name}")
-        add_serde_to_type(path, name)
+        if name == "TextControlCode":
+            # Ruffle already conditionally derives Deserialize for this type.
+            # Add only Serialize so the existing cfg_attr does not create
+            # conflicting Deserialize implementations.
+            add_serialize_only(path, name)
+        else:
+            add_serde_to_type(path, name)
 
 
 def patch_player() -> None:
@@ -264,69 +296,36 @@ def patch_web_handle() -> None:
         print("web savestate handle methods already present")
         return
 
-    methods = r'''    /// Export the current Ruffle deterministic-replay state as JSON.
+    methods = """    /// Export the current Ruffle deterministic-replay state as JSON.
     #[wasm_bindgen]
     pub fn savestate_export(&self) -> Result<String, JsValue> {
-        INSTANCES.with(|instances| {
-            let instances = instances.borrow();
-            let instance = instances
-                .get(*self)
-                .ok_or_else(|| JsValue::from_str("Ruffle instance no longer exists"))?;
-            let core = instance
-                .core
-                .lock()
-                .map_err(|_| JsValue::from_str("Ruffle core lock failed"))?;
-            core.export_savestate_json()
-                .map_err(|e| JsValue::from_str(&e.to_string()))
-        })
+        self.with_core(|core| core.export_savestate_json())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Import a deterministic-replay state after the caller has created a fresh player.
     #[wasm_bindgen]
     pub fn savestate_import(&self, json: String) -> Result<u64, JsValue> {
-        INSTANCES.with(|instances| {
-            let instances = instances.borrow();
-            let instance = instances
-                .get(*self)
-                .ok_or_else(|| JsValue::from_str("Ruffle instance no longer exists"))?;
-            let mut core = instance
-                .core
-                .lock()
-                .map_err(|_| JsValue::from_str("Ruffle core lock failed"))?;
-            core.import_savestate_json(&json)
-                .map_err(|e| JsValue::from_str(&e))
-        })
+        self.with_core_mut(|core| core.import_savestate_json(&json))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .map_err(|e| JsValue::from_str(&e))
     }
 
     /// Run one emulated movie frame while reconstructing an imported state.
     #[wasm_bindgen]
     pub fn savestate_step(&self) -> u64 {
-        INSTANCES.with(|instances| {
-            let instances = instances.borrow();
-            let Some(instance) = instances.get(*self) else {
-                return 0;
-            };
-            let Ok(mut core) = instance.core.lock() else {
-                return 0;
-            };
-            core.savestate_step()
-        })
+        self.with_core_mut(|core| core.savestate_step())
+            .unwrap_or_default()
     }
 
     /// Finish an imported replay by applying input events that occurred at the saved frame.
     #[wasm_bindgen]
     pub fn savestate_finalize(&self) {
-        INSTANCES.with(|instances| {
-            let instances = instances.borrow();
-            if let Some(instance) = instances.get(*self) {
-                if let Ok(mut core) = instance.core.lock() {
-                    core.finalize_savestate_import();
-                }
-            }
-        });
+        let _ = self.with_core_mut(|core| core.finalize_savestate_import());
     }
 
-'''
+"""
     text = text.replace(marker, methods + marker, 1)
     path.write_text(text, encoding="utf-8")
     print("patched web RuffleHandle savestate API")
